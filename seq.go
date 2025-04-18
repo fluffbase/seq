@@ -1,6 +1,5 @@
-// seq(uential) is a simple sequential tty wrapper
-
 package seq
+
 import (
     "fmt"
     "strings"
@@ -13,14 +12,12 @@ import (
     "os"
     "strconv"
     "io"
-)
-
-import (
     //#include <unistd.h>
     //#include <errno.h>
     "C"
 )
 type Env map[string]string
+
 type Cmd interface {
     Run(...Env) (*os.File, error)
 }
@@ -58,6 +55,7 @@ func (s *Seq) Append(seq *Seq) {
     }
     sq.Next = seq
 }
+
 func (s *Seq) Insert(seq *Seq, i int) {
     sq := s
     prev := s
@@ -78,9 +76,11 @@ func (s *Seq) Run() error {
     _, err := s.run()
     return err
 }
+
 func (s *Seq) Attach() (*io.PipeReader, error) {
     return s.run()
 }
+
 func (s *Seq) run() (*io.PipeReader, error) {
     r, out := io.Pipe()
     s.Reader = r
@@ -111,14 +111,13 @@ func (s *Seq) run() (*io.PipeReader, error) {
     return r, nil
 }
 
-
-
 func (v Env)Format(str string) string {
     for k,v := range v {
         str = strings.Replace(str, k, v, -1)
     }
     return str
 }
+
 func (e Env)Extend(values map[string]string) {
     for k, v := range values {
         e[k] = v
@@ -176,4 +175,3 @@ func (c Cond) Run (env ...Env) (*os.File, error) {
     }
     return nil, fmt.Errorf("blank else statement - neither conditional ran")   
 }
-
