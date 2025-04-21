@@ -7,8 +7,8 @@ import(
 	"os"
 	"io"
 )
-func TestSeq(t *testing.T) {
 
+func TestSeq(t *testing.T) {
 	e := Seq{}
 	e.Push(Exec{
 		Cmd:"useradd testuser && whoami",
@@ -21,5 +21,5 @@ func TestSeq(t *testing.T) {
 	e.Run()
 	io.Copy(os.Stdout, e.Reader)
 	output := bufio.NewScanner(e.Reader).Text()
-	fmt.Printf(output)
+	fmt.Print(output)
 }

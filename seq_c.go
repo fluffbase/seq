@@ -1,4 +1,4 @@
-//go:build !cgo && !windows
+//go:build cgo
 
 package seq
 
@@ -13,7 +13,9 @@ import (
     "os"
     "strconv"
     "io"
-    "syscall"
+    //#include <unistd.h>
+    //#include <errno.h>
+    "C"
 )
 
 type Env map[string]string
@@ -153,11 +155,11 @@ func (e Exec) Run(envs ...Env) (*os.File, error) {
         }
         uid, _ := strconv.ParseInt(u.Uid, 10, 32)
         gid, _ := strconv.ParseInt(u.Gid, 10, 32)
-        cerr, errno := syscall.Setgid(gid)
+        cerr, errno := C.setgid(C.__gid_t(gid))
         if cerr != 0 {
             return nil, fmt.Errorf("failed to set GID %d due to error %d", gid, errno)
         }
-        cerr, errno = syscall.Setuid(uid)
+        cerr, errno = C.setuid(C.__uid_t(uid))
         if cerr != 0 {
             return nil, fmt.Errorf("failed to set UID %d due to error %d", uid, errno)
         }
