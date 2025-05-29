@@ -153,13 +153,13 @@ func (e Exec) Run(envs ...Env) (*os.File, error) {
         }
         uid, _ := strconv.ParseInt(u.Uid, 10, 32)
         gid, _ := strconv.ParseInt(u.Gid, 10, 32)
-        cerr := syscall.Setgid((int)gid)
-        if cerr != 0 {
-            return nil, fmt.Errorf("failed to set GID %d due to error %d", gid, errno)
+        cerr := syscall.Setgid(int(gid))
+        if cerr != nil {
+            return nil, fmt.Errorf("failed to set GID %d due to error %v", gid, cerr)
         }
-        cerr = syscall.Setuid((int)uid)
-        if cerr != 0 {
-            return nil, fmt.Errorf("failed to set UID %d due to error %d", uid, errno)
+        cerr = syscall.Setuid(int(uid))
+        if cerr != nil {
+            return nil, fmt.Errorf("failed to set UID %d due to error %v", uid, cerr)
         }
     }
     f, err := pty.Start(runnable)
