@@ -1,16 +1,14 @@
-//go:build cgo
-
+//go:build !cgo && !windows
 package seq
 
 import (
     "fmt"
     "strings"
     "github.com/google/shlex"
-    "github.com/creack/pty"
     "os/exec"
     "os/user"
-    "bytes"
-    "os"
+    //"bytes"
+    //"os"
     "strconv"
     "io"
     //#include <unistd.h>
@@ -20,36 +18,45 @@ import (
 
 type Env map[string]string
 
+type Pipes struct {
+    Stderr io.ReadCloser
+    Stdin io.WriteCloser
+    Stdout io.ReadCloser
+}
 type Cmd interface {
-    Run(...Env) (*os.File, error)
+    Run(...Env) (*Pipes, error)
+    String(...Env) string
 }
 
 type Seq struct {
+    Pipes *Pipes
     Vars Env
     Cmds []Cmd
     Next *Seq
-    Pty *os.File
-    Reader io.Reader
-    Writer io.Writer
+    Header string
+    Footer string
+    Shell string
+
 }
 
 type Exec struct {
+    Pipes *Pipes
     Cmd string
-    Sudo bool
     RunAs string
+    Sudo bool
 }
 
 type Cond struct {
+    Pipes *Pipes
     Cmd string
+    RunAs string
     Sudo bool
     Do bool
     Else string
-    RunAs string
 }
 
 func (s *Seq) Push(cmds ...Cmd) {
-    for i,cmd := range cmds {
-        fmt.Printf("Adding %dth command: %s\n", i, cmd)
+    for _, cmd := range cmds {
         s.Cmds = append(s.Cmds, cmd)
     }
 }
@@ -83,72 +90,85 @@ func (s *Seq) Run() error {
     return err
 }
 
-func (s *Seq) Attach() (*io.PipeReader, error) {
+func (s *Seq) Attach() (*Pipes, error) {
     return s.run()
 }
 
-func (s *Seq) run() (*io.PipeReader, error) {
-    r, out := io.Pipe()
-    s.Reader = r
-    //in, s.Writer := io.Pipe()
+func (s *Seq) run() (*Pipes, error) {
+    if s.Shell == "" {
+        s.Shell = "sh -es"
+    }
+    header := []byte(s.Header)
+    args, err := shlex.Split(s.Shell) 
+    if err != nil {
+        return nil, fmt.Errorf("failed to split args for shell command %s: %v", s.Shell, err)
+    }
+    sh := exec.Command(args[0], args[1:]...)
+
+    inPipe, err2 := sh.StdinPipe()
+    errPipe, err1 := sh.StderrPipe()
+    outPipe, err3 := sh.StdoutPipe()
+    if err1 != nil || err2 != nil || err3 != nil {
+        return nil, fmt.Errorf("Failed to get pipe err: %v\nin: %v\nout: %v", err1, err2, err3)
+    }
+    s.Pipes = &Pipes {
+        Stderr:errPipe,
+        Stdin:inPipe,
+        Stdout:outPipe,
+    }
+    sh.Start()
+
     cursor := s
+    inPipe.Write(header)
     for cursor != nil {
-        for i, cmd := range s.Cmds {
-            f, err := cmd.Run(s.Vars)
-            if err!=nil {
-                return nil, fmt.Errorf("sequence failed running at %d: %v", i, err)
-            }
-            _, err2 := io.Copy(out, f)
-            if err2 != nil {
-                return nil, fmt.Errorf("failed copying output writer at %d: %v", i, err2)
-            }
-           /* _, err := io.Copy(f, in)
-            if err != nil {
-                return fmt.Errorf("failed copying input writer at %d: %v", i, err)
-            }*/
+        for _, cmd := range s.Cmds {
+            inPipe.Write([]byte(cmd.String(s.Vars)+"\n"))
         }
         if s.Next != s {
             cursor = s.Next    
         } else {
-            return nil, fmt.Errorf("cyclic sequence detected")
+            cursor = nil
         }
-    }   
-    out.Close()
-    return r, nil
+    }
+    inPipe.Write([]byte(s.Footer))
+    inPipe.Close()
+
+    return s.Pipes, nil
 }
 
-func (v Env)Format(str string) string {
+func (v Env) Format(str string) string {
     for k,v := range v {
         str = strings.Replace(str, k, v, -1)
     }
     return str
 }
 
-func (e Env)Extend(values map[string]string) {
+func (e Env) Extend(values map[string]string) {
     for k, v := range values {
         e[k] = v
     }
 }
 
-func (e Exec) Run(envs ...Env) (*os.File, error) {
+func (e Exec) String(envs ...Env) string {
     cmd := e.Cmd
     if e.Sudo {
-        cmd = fmt.Sprintf("/usr/bin/sudo %s", cmd)
+        usr := ""
+        if e.RunAs != "" {
+            usr = fmt.Sprintf("-u %s", e.RunAs)
+        }
+        cmd = fmt.Sprintf("/usr/bin/sudo %s%s", usr, cmd)
     }
     if len(envs)>0 {
         for _,env := range envs {
             cmd=env.Format(cmd)
         }
     }
-    args, err := shlex.Split(cmd)
-    if err != nil {
-        return nil, fmt.Errorf("failed to split args for %s: %v", cmd, err)
-    }
-    runnable := exec.Command(args[0], args[1:]...)
+    return cmd
+}
 
-    var stderr bytes.Buffer
-    runnable.Stderr = &stderr
-    if e.RunAs != "" {
+func (e Exec) Run(envs ...Env) (*Pipes, error) {
+    s := Seq{Vars:envs[0], Cmds:[]Cmd{e}}
+    if !e.Sudo && e.RunAs != "" {
         u, err := user.Lookup(e.RunAs)
         if err != nil {
             return nil, fmt.Errorf("could not find user %s; %v", e.RunAs, err)
@@ -164,20 +184,29 @@ func (e Exec) Run(envs ...Env) (*os.File, error) {
             return nil, fmt.Errorf("failed to set UID %d due to error %d", uid, errno)
         }
     }
-    f, err := pty.Start(runnable)
-    
+    err := s.Run()
     if err!=nil {
-        return nil, fmt.Errorf("failed to run %s; %v; %s", cmd, err, stderr.String())
+        serr, _ := io.ReadAll(s.Pipes.Stderr)
+        return nil, fmt.Errorf("failed to run %s; %v; %s", e.Cmd, err, serr)
     }
-    return f, nil
+    return s.Pipes, nil
 }
 
-func (c Cond) Run (env ...Env) (*os.File, error) {
+func (c Cond) String(envs ...Env) string {
+    if c.Do {
+        return Exec{Cmd:c.Cmd, Sudo:c.Sudo, RunAs:c.RunAs}.String(envs...)
+    }
+    if c.Else != "" {
+        return Exec{Cmd:c.Else, Sudo:c.Sudo, RunAs:c.RunAs}.String(envs...)
+    }
+    return ":"
+}
+func (c Cond) Run (env ...Env) (*Pipes, error) {
     if c.Do {
         return Exec{Cmd:c.Cmd, Sudo:c.Sudo, RunAs:c.RunAs}.Run(env...)
     } 
     if c.Else != "" {
         return Exec{Cmd:c.Else, Sudo:c.Sudo, RunAs:c.RunAs}.Run(env...)
     }
-    return nil, fmt.Errorf("blank else statement - neither conditional ran")   
+    return nil, nil
 }
